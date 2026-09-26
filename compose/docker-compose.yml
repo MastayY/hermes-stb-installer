@@ -1,0 +1,55 @@
+services:
+  router:
+    image: decolua/9router:latest
+    container_name: 9router
+    restart: unless-stopped
+    ports:
+      - "${ROUTER_BIND_HOST:-127.0.0.1}:${ROUTER_PORT:-20128}:20128"
+    volumes:
+      - ${ROUTER_DATA_DIR:-~/.9router}:/app/data
+    environment:
+      - DATA_DIR=/app/data
+      - PORT=20128
+      - JWT_SECRET=${ROUTER_JWT_SECRET:-default_jwt_secret_min_32_chars_long}
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:20128/v1/models || curl -fsSL http://127.0.0.1:20128/v1/models || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - internal_net
+
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-agent
+    restart: unless-stopped
+    depends_on:
+      router:
+        condition: service_healthy
+    volumes:
+      - ${HERMES_DATA_DIR:-~/.hermes}:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-1000}
+      - HERMES_GID=${HERMES_GID:-1000}
+      - HERMES_HOME=/opt/data
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS:-}
+      - OPENAI_BASE_URL=http://router:20128/v1
+      - OPENAI_API_KEY=${ROUTER_API_KEY:-sk-local-router}
+      - DEFAULT_MODEL=${COMBO_NAME:-combo-primary}
+    command: ["gateway", "run"]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - internal_net
+
+networks:
+  internal_net:
+    driver: bridge
