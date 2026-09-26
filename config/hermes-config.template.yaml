@@ -10,6 +10,15 @@ terminal:
   backend: "local"
   timeout: 180
 
+agent:
+  disabled_toolsets:
+    - browser
+    - vision
+    - image_gen
+    - video_gen
+    - tts
+    - computer_use
+
 browser:
   backend: "off"
 

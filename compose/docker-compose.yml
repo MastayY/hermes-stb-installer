@@ -11,6 +11,8 @@ services:
       - DATA_DIR=/app/data
       - PORT=20128
       - JWT_SECRET=${ROUTER_JWT_SECRET:-default_jwt_secret_min_32_chars_long}
+      - INITIAL_PASSWORD=${INITIAL_PASSWORD:-admin}
+      - REQUIRE_API_KEY=${REQUIRE_API_KEY:-false}
     deploy:
       resources:
         limits:

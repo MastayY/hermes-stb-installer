@@ -31,6 +31,9 @@ assert 'router' in std['services'], 'Missing router service in standard compose'
 assert 'hermes' in std['services'], 'Missing hermes service in standard compose'
 assert std['services']['router']['deploy']['resources']['limits']['memory'] == '384M'
 assert std['services']['hermes']['deploy']['resources']['limits']['memory'] == '768M'
+router_env = std['services']['router']['environment']
+assert any('INITIAL_PASSWORD=' in e for e in router_env), 'Missing INITIAL_PASSWORD in router env'
+assert any('REQUIRE_API_KEY=' in e for e in router_env), 'Missing REQUIRE_API_KEY in router env'
 
 with open('${COMPOSE_LITE}') as f:
     lite = yaml.safe_load(f)
@@ -48,6 +51,12 @@ with open('${HERMES_CONFIG}') as f:
     cfg = yaml.safe_load(f)
 assert cfg['browser']['backend'] == 'off', 'Hermes config template must disable browser'
 assert cfg['model']['provider'] == 'custom', 'Hermes config template must point to custom router'
+
+# Verify official agent.disabled_toolsets list
+disabled = cfg['agent']['disabled_toolsets']
+expected = ['browser', 'vision', 'image_gen', 'video_gen', 'tts', 'computer_use']
+for toolset in expected:
+    assert toolset in disabled, f'Missing {toolset} in agent.disabled_toolsets'
 "
 echo "  [PASS] Compose YAML structures, memory limits, and lite parameters successfully validated"
 
