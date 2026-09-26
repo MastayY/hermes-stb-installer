@@ -1,0 +1,26 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - PROXY_USER=${PROXY_USER:-admin}
+      - PROXY_PASSWORD_HASH=${PROXY_PASSWORD_HASH:-$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR78.44mUnGWDexG}
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks:
+      - internal_net
+
+volumes:
+  caddy_data:
+  caddy_config:

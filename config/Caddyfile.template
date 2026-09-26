@@ -1,0 +1,17 @@
+# Caddy Reverse Proxy Configuration for STB Homelab
+# Automatic HTTPS, HTTP/2 & HTTP/3 support with Basic Authentication
+
+{$DOMAIN:localhost} {
+    # Basic Authentication to secure the 9Router dashboard
+    basicauth * {
+        {$PROXY_USER:admin} {$PROXY_PASSWORD_HASH:$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR78.44mUnGWDexG}
+    }
+
+    # Proxy to 9Router container
+    reverse_proxy router:20128 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
