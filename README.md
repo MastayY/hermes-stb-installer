@@ -35,7 +35,7 @@ This installer provides:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/example/hermes-stb-installer.git
+git clone https://github.com/MastayY/hermes-stb-installer.git
 cd hermes-stb-installer
 ```
 
@@ -82,24 +82,6 @@ For devices with 1 GB RAM:
 | `--help`, `-h` | Shows usage documentation | |
 
 ---
-
-## Architecture
-
-```
-+---------------------------------------------------------+
-|                  STB Host (Armbian aarch64)              |
-|                                                         |
-|  +--------------------+        +---------------------+  |
-|  |    Hermes Agent    |------->|       9Router       |  |
-|  |  (Gateway Service) |        |  (Port 20128, LAN)  |  |
-|  +---------+----------+        +----------+----------+  |
-|            |                              |             |
-|            | Outbound                     | Outbound    |
-|            v                              v             |
-|       Telegram API                 LLM Providers        |
-|      (Long-polling)            (OpenRouter, DeepSeek)   |
-+---------------------------------------------------------+
-```
 
 ### Network Isolation
 - Hermes Agent connects to 9Router over an internal container bridge network.
