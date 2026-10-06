@@ -1,5 +1,6 @@
-docs
 .env
 .runtime
-*.log
+data/
+backups/
 config/Caddyfile
+*.log

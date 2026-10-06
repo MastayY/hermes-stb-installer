@@ -1,0 +1,45 @@
+# hermes-stb-installer — config/hermes-config.yaml.template
+#
+# install.sh copies this to data/hermes/config.yaml (substituting the
+# placeholders below) so the container picks it up at /opt/data/config.yaml.
+#
+# Confidence notes:
+#   - `agent.disabled_toolsets` is CONFIRMED against
+#     website/docs/user-guide/configuration.md ("Global Toolset Disable")
+#     and website/docs/reference/toolsets-reference.md — the toolset names
+#     below (browser, vision, image_gen, video_gen, tts, computer_use) are
+#     taken directly from that reference.
+#   - The `model:` block is CONFIRMED: website/docs/integrations/providers.md
+#     shows this exact shape (`default`, `provider: custom`, `base_url`,
+#     `api_key`), and gateway/run.py + hermes_cli/runtime_provider_custom.py
+#     read `model.default`, `model.provider`, `model.base_url` the same way.
+#     (An alternative `key_env: VAR_NAME` exists to keep the secret out of
+#     this file — not used here because it is unverified whether the
+#     container's env reaches that lookup; consider it as future hardening.)
+#   - 9router REQUIRES an API key by default (verified against a live
+#     instance), so api_key below is mandatory, not optional.
+
+model:
+  provider: custom
+  base_url: "http://localhost:20128/v1"
+  api_key: "__NINE_ROUTER_API_KEY__"   # REQUIRED: 9router requires a key by default (verified live)
+  default: "__HERMES_MODEL_TARGET__"   # a single "<alias>/<model>" id, or a combo name — see .env's NINE_ROUTER_MODELS
+
+# -----------------------------------------------------------------------------
+# Lite mode — only applied by install.sh when HERMES_MODE=lite in .env.
+# Disables the heaviest tool categories for low-RAM STB devices. Full mode
+# (HERMES_MODE=full) omits this whole `agent:` block instead.
+# -----------------------------------------------------------------------------
+agent:
+  disabled_toolsets:
+    - browser
+    - vision
+    - image_gen
+    - video_gen
+    - tts
+    - computer_use
+
+# Unattended gateway sessions (Telegram, etc.) already default to hard-stopping
+# runaway tool loops (non_interactive_hard_stop_enabled: true) per
+# website/docs/user-guide/docker.md. Left at the default here deliberately —
+# only relax this if you understand the tradeoff.

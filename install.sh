@@ -1,241 +1,205 @@
 #!/usr/bin/env bash
-# install.sh: Main installer entrypoint for Hermes Agent + 9Router Homelab Stack.
+# install.sh — hermes-stb-installer
+#
+# curl -fsSL <raw-url>/install.sh | bash
+# (or, safer: download first, read it, then run — see docs/README.md)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/detect.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/swap.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/runtime-select.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/podman-setup.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/docker-fix.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/combo-setup.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/healthcheck.sh"
+# -----------------------------------------------------------------------------
+# Flag parsing
+# -----------------------------------------------------------------------------
+RUNTIME_CHOICE="podman"
+NO_SWAP=0
+WITH_PROXY=0
+PROXY_DOMAIN=""
 
-show_help() {
-    cat <<EOF
-Usage: ./install.sh [OPTIONS]
-
-Installs and configures Hermes Agent and 9Router on low-resource Linux and STB systems.
+usage() {
+  cat <<EOF
+Usage: ./install.sh [options]
 
 Options:
-  --runtime=podman|docker    Container runtime to use (default: podman)
-  --lite                     Enable low-RAM profile (disables browser/vision tools)
-  --with-proxy               Deploy Caddy reverse proxy with basicauth and TLS
-  --no-swap                  Disable automated swapfile allocation
-  --non-interactive          Do not prompt for inputs; rely exclusively on .env
-  --help, -h                 Display this help message
-
-Examples:
-  ./install.sh
-  ./install.sh --lite
-  ./install.sh --runtime=docker --no-swap
+  --runtime=podman|docker   Container runtime to use (default: podman)
+  --no-swap                 Skip automatic swapfile creation
+  --with-proxy=<domain>     Also set up Caddy reverse proxy for 9router's
+                             dashboard at <domain> (off by default)
+  -h, --help                Show this help and exit
 EOF
 }
 
-# Default flag values
-REQUESTED_RUNTIME="podman"
-LITE_MODE=false
-WITH_PROXY=false
-NO_SWAP=false
-NON_INTERACTIVE=false
-
-# Parse command line options
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --runtime=*)
-            REQUESTED_RUNTIME="${1#*=}"
-            shift
-            ;;
-        --lite)
-            LITE_MODE=true
-            shift
-            ;;
-        --with-proxy)
-            WITH_PROXY=true
-            shift
-            ;;
-        --no-swap)
-            NO_SWAP=true
-            shift
-            ;;
-        --non-interactive)
-            NON_INTERACTIVE=true
-            shift
-            ;;
-        --help|-h)
-            show_help
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1" >&2
-            show_help
-            exit 1
-            ;;
-    esac
+for arg in "$@"; do
+  case "$arg" in
+    --runtime=*) RUNTIME_CHOICE="${arg#*=}" ;;
+    --no-swap) NO_SWAP=1 ;;
+    --with-proxy=*) WITH_PROXY=1; PROXY_DOMAIN="${arg#*=}" ;;
+    --with-proxy) echo "ERROR: --with-proxy requires a domain, e.g. --with-proxy=hermes.example.com" >&2; exit 1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERROR: unknown option '$arg'" >&2; usage; exit 1 ;;
+  esac
 done
+export NO_SWAP WITH_PROXY
 
-echo "=========================================================="
-echo "    Hermes Agent + 9Router Homelab STB Installer         "
-echo "=========================================================="
-
-# -----------------------------------------------------------------------------
-# Step 1: Preflight Detection
-# -----------------------------------------------------------------------------
-echo "[1/7] Running preflight system inspection..."
-run_preflight_checks
-
-# Auto-enable lite mode if RAM is <= 2048 MB and user did not specify
-if [[ "${DETECT_IS_LOW_RAM}" == "true" && "${LITE_MODE}" != "true" ]]; then
-    echo "NOTICE: Low physical RAM detected (${DETECT_RAM_MB} MB). Automatically activating --lite mode."
-    LITE_MODE=true
+if [ "$(id -u)" -ne 0 ]; then
+  echo "ERROR: install.sh needs root (for package install, swap, UFW/systemd" >&2
+  echo "       changes). Re-run with sudo: sudo ./install.sh $*" >&2
+  exit 1
 fi
 
 # -----------------------------------------------------------------------------
-# Step 2: Swap Management
+# Load libraries
 # -----------------------------------------------------------------------------
-echo "[2/7] Checking memory and swap configuration..."
-swap_setup "${DETECT_RAM_MB}" "${NO_SWAP}"
+# shellcheck source=lib/detect.sh
+. lib/detect.sh
+# shellcheck source=lib/swap.sh
+. lib/swap.sh
+# shellcheck source=lib/runtime-select.sh
+. lib/runtime-select.sh
+# shellcheck source=lib/podman-setup.sh
+. lib/podman-setup.sh
+# shellcheck source=lib/docker-fix.sh
+. lib/docker-fix.sh
+# shellcheck source=lib/combo-setup.sh
+. lib/combo-setup.sh
+# shellcheck source=lib/healthcheck.sh
+. lib/healthcheck.sh
 
-# -----------------------------------------------------------------------------
-# Step 3: Runtime Resolution and Setup
-# -----------------------------------------------------------------------------
-echo "[3/7] Setting up container runtime..."
-RUNTIME="$(runtime_determine "${REQUESTED_RUNTIME}")"
-echo "Selected runtime: ${RUNTIME}"
-
-runtime_install_package "${RUNTIME}"
-runtime_save_state "${RUNTIME}"
-
-if [[ "${RUNTIME}" == "podman" ]]; then
-    podman_enable_user_linger "$(whoami)"
-    podman_verify_subuid_subgid "$(whoami)"
-elif [[ "${RUNTIME}" == "docker" ]]; then
-    docker_apply_daemon_json
-    docker_apply_ufw_rules
-fi
+echo "=================================================================="
+echo " hermes-stb-installer"
+echo "=================================================================="
 
 # -----------------------------------------------------------------------------
-# Step 4: Environment & Secrets Preparation
+# Phase 1 — Preflight
 # -----------------------------------------------------------------------------
-echo "[4/7] Preparing environment variables and configuration files..."
-ENV_FILE="${SCRIPT_DIR}/.env"
-
-if [[ ! -f "${ENV_FILE}" ]]; then
-    echo "Creating new .env from template..."
-    cp "${SCRIPT_DIR}/.env.example" "${ENV_FILE}"
-
-    # Generate secure random secret for 9Router JWT
-    random_secret="$(python3 -c "import secrets; print(secrets.token_hex(32))" 2>/dev/null || openssl rand -hex 32 2>/dev/null || echo "random_secret_$(date +%s)")"
-    sed -i "s|^ROUTER_JWT_SECRET=.*|ROUTER_JWT_SECRET=${random_secret}|" "${ENV_FILE}"
-
-    # Set user UID and GID
-    current_uid="$(id -u)"
-    current_gid="$(id -g)"
-    sed -i "s|^HERMES_UID=.*|HERMES_UID=${current_uid}|" "${ENV_FILE}"
-    sed -i "s|^HERMES_GID=.*|HERMES_GID=${current_gid}|" "${ENV_FILE}"
-
-    # Secure file permissions (0600)
-    chmod 600 "${ENV_FILE}"
-    echo "Generated ${ENV_FILE} with restrictive permissions (0600)."
-fi
-
-# Prepare Hermes config directory and configuration file
-HERMES_HOST_DIR="${HERMES_DATA_DIR:-${HOME}/.hermes}"
-HERMES_HOST_DIR="${HERMES_HOST_DIR/#\~/$HOME}"
-
-if mkdir -p "${HERMES_HOST_DIR}" 2>/dev/null; then
-    if [[ -w "${HERMES_HOST_DIR}" ]]; then
-        if [[ ! -f "${HERMES_HOST_DIR}/config.yaml" ]]; then
-            cp "${SCRIPT_DIR}/config/hermes-config.template.yaml" "${HERMES_HOST_DIR}/config.yaml" 2>/dev/null || true
-            chmod 644 "${HERMES_HOST_DIR}/config.yaml" 2>/dev/null || true
-        fi
-    else
-        echo "Notice: ${HERMES_HOST_DIR} is owned by another UID (likely container user). Skipping template copy."
-    fi
-fi
-
-# Prepare Caddyfile if proxy is enabled
-if [[ "${WITH_PROXY}" == "true" ]]; then
-    if [[ ! -f "${SCRIPT_DIR}/config/Caddyfile" ]]; then
-        cp "${SCRIPT_DIR}/config/Caddyfile.template" "${SCRIPT_DIR}/config/Caddyfile"
-    fi
-fi
+echo
+echo "[1/9] Preflight checks"
+detect_arch
+detect_ram_mb
+detect_distro
+print_detect_summary
+require_supported_arch
 
 # -----------------------------------------------------------------------------
-# Step 5: Service Deployment
+# Phase 2 — Resource management (swap)
 # -----------------------------------------------------------------------------
-echo "[5/7] Deploying containers..."
-
-COMPOSE_ARGS=("-f")
-COMPOSE_PRIMARY_FILE="compose/docker-compose.yml"
-if [[ "${LITE_MODE}" == "true" ]]; then
-    COMPOSE_PRIMARY_FILE="compose/docker-compose.lite.yml"
-fi
-COMPOSE_ARGS+=("${SCRIPT_DIR}/${COMPOSE_PRIMARY_FILE}")
-
-if [[ "${WITH_PROXY}" == "true" ]]; then
-    COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/compose/docker-compose.proxy.yml")
-fi
-
-# Export environment file variables for compose execution
-# shellcheck disable=SC2046
-export $(grep -v '^#' "${ENV_FILE}" | xargs -d '\n' 2>/dev/null || true)
-
-if [[ "${RUNTIME}" == "podman" ]]; then
-    podman_setup_systemd_service "${SCRIPT_DIR}" "${COMPOSE_PRIMARY_FILE}"
-fi
-
-echo "Starting services via ${RUNTIME} compose..."
-container_compose_exec "${RUNTIME}" "${COMPOSE_ARGS[@]}" up -d
+echo
+echo "[2/9] Resource management"
+ensure_swap "$RAM_TOTAL_MB" "${SWAP_THRESHOLD_MB:-2048}"
 
 # -----------------------------------------------------------------------------
-# Step 6: 9Router Provider & Combo Registration
+# Phase 3 — Runtime setup
 # -----------------------------------------------------------------------------
-echo "[6/7] Initializing 9Router provider and fallback combo routing..."
-if combo_wait_for_router 20 2; then
-    combo_run_autoconfig "${ENV_FILE}"
+echo
+echo "[3/9] Container runtime ($RUNTIME_CHOICE)"
+select_runtime "$RUNTIME_CHOICE"
+smoke_test_runtime
+
+if [ "$CONTAINER_RUNTIME" = "podman" ]; then
+  setup_podman_rootless_autostart
 else
-    echo "NOTICE: 9Router took longer than expected to start. You can rerun './lib/combo-setup.sh' later."
+  apply_docker_ufw_fix
+  apply_docker_log_rotation
 fi
 
 # -----------------------------------------------------------------------------
-# Step 7: Post-Install Health Diagnostics
+# Phase 4 — .env
 # -----------------------------------------------------------------------------
-echo "[7/7] Running post-installation diagnostics..."
-run_full_healthcheck "${RUNTIME}"
+echo
+echo "[4/9] Configuration (.env)"
+if [ ! -f .env ]; then
+  if [ -t 0 ]; then
+    cp .env.example .env
+    echo "  .env created from .env.example — edit it now with your API keys"
+    echo "  and Telegram bot token, then press Enter to continue (or Ctrl+C"
+    echo "  to stop and edit at your leisure, then re-run ./install.sh)."
+    read -r _ || true
+  else
+    echo "ERROR: .env not found and this isn't an interactive terminal" >&2
+    echo "       (e.g. running via curl | bash). Create .env from" >&2
+    echo "       .env.example first, then re-run." >&2
+    exit 1
+  fi
+fi
+# shellcheck source=.env.example
+set -a
+. ./.env
+set +a
 
 # -----------------------------------------------------------------------------
-# Final Summary and Instructions
+# Phase 5 — Data dirs + Hermes config.yaml
 # -----------------------------------------------------------------------------
-local_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "YOUR_STB_IP")"
+echo
+echo "[5/9] Preparing data directories"
+mkdir -p data/9router data/hermes data/caddy/data data/caddy/config
 
-echo "=========================================================="
-echo "          Installation Successfully Completed!           "
-echo "=========================================================="
-echo "Active Runtime      : ${RUNTIME}"
-echo "Deployment Profile  : $([[ "${LITE_MODE}" == "true" ]] && echo "Lite (RAM-optimized)" || echo "Standard")"
-echo "Reverse Proxy       : $([[ "${WITH_PROXY}" == "true" ]] && echo "Enabled (Caddy TLS)" || echo "Disabled (Internal only)")"
-echo ""
-echo "Accessing 9Router Web Dashboard:"
-echo "  Direct Local LAN  : http://127.0.0.1:20128/dashboard"
-echo "  Via SSH Tunnel    : ssh -L 20128:127.0.0.1:20128 $(whoami)@${local_ip}"
-echo "                      Then open http://localhost:20128/dashboard in your local browser."
-echo ""
-echo "Connecting Hermes Agent:"
-echo "  1. If you provided TELEGRAM_BOT_TOKEN in .env, start chatting with your bot on Telegram."
-echo "  2. If not yet configured, edit .env with your bot token and run: ./update.sh"
-echo ""
-echo "Management Commands:"
-echo "  Update stack      : ./update.sh $([[ "${LITE_MODE}" == "true" ]] && echo "--lite")"
-echo "  View router logs  : ${RUNTIME} logs -f 9router"
-echo "  View agent logs   : ${RUNTIME} logs -f hermes-agent"
-echo "  Uninstall stack   : ./uninstall.sh"
-echo "=========================================================="
+write_service_env_files() {
+  # Split .env so each container only receives what it needs.
+  ( umask 077
+    grep -E '^(JWT_SECRET|INITIAL_PASSWORD|DATA_DIR|PORT|NODE_ENV|API_KEY_SECRET|MACHINE_ID_SALT|BASE_URL|NEXT_PUBLIC_BASE_URL)=' .env > data/9router.env || true
+    grep -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_ALLOWED_USERS|HERMES_DASHBOARD[A-Z_]*|HERMES_UID|HERMES_GID)=' .env > data/hermes.env || true
+    touch data/9router.env data/hermes.env )
+  chmod 600 data/9router.env data/hermes.env
+}
+
+render_hermes_config() {
+  local out=data/hermes/config.yaml.tmp
+  sed \
+    -e "s|__HERMES_MODEL_TARGET__|${HERMES_MODEL_TARGET:-}|g" \
+    -e "s|__NINE_ROUTER_API_KEY__|${NINE_ROUTER_API_KEY:-}|g" \
+    config/hermes-config.yaml.template > "$out"
+  if [ "${HERMES_MODE:-lite}" = "full" ]; then
+    # Strip the agent:/disabled_toolsets: block for full mode.
+    awk '/^agent:/{skip=1} /^# Unattended/{skip=0} !skip' "$out" > data/hermes/config.yaml
+    rm -f "$out"
+  else
+    mv "$out" data/hermes/config.yaml
+  fi
+  chmod 600 data/hermes/config.yaml   # contains the 9router API key
+}
+
+write_service_env_files
+render_hermes_config
+echo "  Wrote data/hermes/config.yaml (mode: ${HERMES_MODE:-lite})"
+
+if [ "$WITH_PROXY" = "1" ]; then
+  sed "s|__DOMAIN__|${PROXY_DOMAIN}|g" config/Caddyfile.template > config/Caddyfile
+  echo "  Wrote config/Caddyfile for domain: $PROXY_DOMAIN"
+fi
+
+# -----------------------------------------------------------------------------
+# Phase 6 — Bring services up
+# -----------------------------------------------------------------------------
+echo
+echo "[6/9] Starting services ($CONTAINER_RUNTIME compose up -d)"
+compose up -d
+
+# -----------------------------------------------------------------------------
+# Phase 7 — Combo auto-setup
+# -----------------------------------------------------------------------------
+echo
+echo "[7/9] 9Router combo setup"
+# The first render (above, before 9router/combo existed) wrote an empty
+# model.default — always re-render once the real target is known.
+if run_combo_setup; then
+  echo "  Re-rendering Hermes config (model: ${HERMES_MODEL_TARGET}) and restarting hermes..."
+  render_hermes_config
+  compose restart hermes
+else
+  echo "  (continuing — connect a provider in the 9router dashboard and set"
+  echo "   NINE_ROUTER_MODELS in .env, or run 'hermes model' inside the hermes"
+  echo "   container to configure it directly, then re-run ./install.sh)"
+fi
+
+# -----------------------------------------------------------------------------
+# Phase 8 — Health check + summary
+# -----------------------------------------------------------------------------
+echo
+echo "[8/9] Health check"
+run_post_install_healthcheck || true
+
+# -----------------------------------------------------------------------------
+# Phase 9 — Done
+# -----------------------------------------------------------------------------
+echo
+echo "[9/9] Done."

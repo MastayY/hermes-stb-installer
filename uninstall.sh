@@ -1,114 +1,68 @@
 #!/usr/bin/env bash
-# uninstall.sh: Clean teardown and uninstaller for Hermes Agent + 9Router Homelab Stack.
+# uninstall.sh — hermes-9router-stb-installer
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/runtime-select.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/podman-setup.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/docker-fix.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/swap.sh"
-
-show_help() {
-    cat <<EOF
-Usage: ./uninstall.sh [OPTIONS]
-
-Cleanly stops and tears down the Hermes Agent + 9Router stack.
-
-Options:
-  --purge-data       Delete persistent data directories (~/.hermes and ~/.9router)
-  --remove-swap      Deactivate and remove /swapfile created during installation
-  --force, -f        Execute without interactive confirmation prompts
-  --help, -h         Display this help message
-
-EOF
-}
-
-PURGE_DATA=false
-REMOVE_SWAP=false
-FORCE=false
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --purge-data)
-            PURGE_DATA=true
-            shift
-            ;;
-        --remove-swap)
-            REMOVE_SWAP=true
-            shift
-            ;;
-        --force|-f)
-            FORCE=true
-            shift
-            ;;
-        --help|-h)
-            show_help
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1" >&2
-            show_help
-            exit 1
-            ;;
-    esac
-done
-
-if [[ "${FORCE}" != "true" && -t 0 ]]; then
-    read -r -p "Are you sure you want to uninstall Hermes Agent + 9Router? [y/N]: " confirm
-    if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
-        echo "Uninstall cancelled."
-        exit 0
-    fi
+if [ "$(id -u)" -ne 0 ]; then
+  echo "ERROR: uninstall.sh needs root. Re-run with sudo." >&2
+  exit 1
 fi
 
-echo "=========================================================="
-echo "          Hermes + 9Router Stack Uninstaller             "
-echo "=========================================================="
+# shellcheck source=lib/swap.sh
+. lib/swap.sh
+# shellcheck source=lib/runtime-select.sh
+. lib/runtime-select.sh
+# shellcheck source=lib/podman-setup.sh
+. lib/podman-setup.sh
+# shellcheck source=lib/docker-fix.sh
+. lib/docker-fix.sh
 
-RUNTIME="$(runtime_determine "")"
-echo "Active runtime identified: ${RUNTIME}"
-
-# 1. Stop and remove containers
-echo "Stopping container services..."
-if [[ -f "${SCRIPT_DIR}/compose/docker-compose.yml" ]]; then
-    container_compose_exec "${RUNTIME}" -f "${SCRIPT_DIR}/compose/docker-compose.yml" down --remove-orphans 2>/dev/null || true
+if [ ! -f .runtime ]; then
+  echo "ERROR: .runtime state file not found — was this installed with" >&2
+  echo "       install.sh from this same directory?" >&2
+  exit 1
 fi
-if [[ -f "${SCRIPT_DIR}/compose/docker-compose.lite.yml" ]]; then
-    container_compose_exec "${RUNTIME}" -f "${SCRIPT_DIR}/compose/docker-compose.lite.yml" down --remove-orphans 2>/dev/null || true
+CONTAINER_RUNTIME="$(cat .runtime)"
+export CONTAINER_RUNTIME
+WITH_PROXY=0
+[ -f config/Caddyfile ] && WITH_PROXY=1
+export WITH_PROXY
+
+echo "This will stop and remove the hermes + 9router containers, revert"
+echo "runtime-level system changes (UFW rule or podman-restart service),"
+echo "and optionally remove the swapfile and all data (chat history,"
+echo "provider keys, combo config)."
+echo
+read -r -p "Remove all data in ./data too? [y/N] " remove_data
+read -r -p "Remove swapfile created by install.sh (if any)? [y/N] " remove_swap_answer
+read -r -p "Proceed with uninstall? [y/N] " confirm
+
+if [ "${confirm,,}" != "y" ]; then
+  echo "Aborted."
+  exit 0
 fi
 
-# 2. Runtime-specific cleanups
-if [[ "${RUNTIME}" == "podman" ]]; then
-    echo "Removing Podman systemd autostart service..."
-    podman_remove_systemd_service
-elif [[ "${RUNTIME}" == "docker" ]]; then
-    echo "Reverting Docker UFW firewall rules..."
-    docker_revert_ufw_rules
-fi
+echo "Stopping and removing containers..."
+compose down --remove-orphans || true
 
-# 3. Swapfile cleanup (if requested)
-if [[ "${REMOVE_SWAP}" == "true" ]]; then
-    echo "Removing allocated swapfile..."
-    swap_remove
-fi
-
-# 4. Data purge (if requested)
-if [[ "${PURGE_DATA}" == "true" ]]; then
-    echo "Purging application data directories..."
-    rm -rf "${HOME}/.hermes" "${HOME}/.9router"
-    echo "Data directories removed."
+if [ "$CONTAINER_RUNTIME" = "podman" ]; then
+  teardown_podman_rootless_autostart
 else
-    echo "Preserving configuration and data directories (~/.hermes and ~/.9router)."
+  revert_docker_ufw_fix
 fi
 
-# 5. Remove state file
-rm -f "${SCRIPT_DIR}/.runtime"
+if [ "${remove_swap_answer,,}" = "y" ]; then
+  remove_swap
+fi
 
-echo "=========================================================="
-echo "Uninstall completed cleanly."
-echo "=========================================================="
+if [ "${remove_data,,}" = "y" ]; then
+  rm -rf data
+  rm -f .env config/Caddyfile
+  echo "Removed ./data, .env, config/Caddyfile"
+fi
+
+rm -f .runtime
+
+echo "Uninstall complete."

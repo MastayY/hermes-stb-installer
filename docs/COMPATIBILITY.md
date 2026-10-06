@@ -9,7 +9,7 @@ Fill in what you can; leave cells blank if unsure rather than guessing.
 
 | Device | SoC / Arch | RAM | OS / Kernel | Runtime | Hermes mode | Status | Idle RAM usage | Notes |
 |---|---|---|---|---|---|---|---|---|
-| HG860p | Amlogic S905L3A / aarch64 | 2GB | Armbian (ophub/amlogic-s9xxx-armbian, bookworm) | podman | lite | _(not yet tested end-to-end)_ | | |
+| HG860p | Amlogic S905L3A / aarch64 | 2GB | Armbian (ophub/amlogic-s9xxx-armbian, bookworm) | podman | lite | _not yet tested end-to-end_ | | |
 
 ## Status legend
 

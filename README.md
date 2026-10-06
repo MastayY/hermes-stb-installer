@@ -1,162 +1,142 @@
-# Hermes Agent and 9Router STB Homelab Installer
+# hermes-stb-installer
 
-An automated deployment tool designed to run Nous Research Hermes Agent and 9Router on resource-constrained Linux systems and repurposed Android TV boxes (STBs) running Armbian or Debian.
+Auto-deploy [Hermes Agent](https://github.com/NousResearch/hermes-agent) +
+[9Router](https://github.com/decolua/9router) on homelab STB hardware
+(Android TV boxes flashed with Armbian/Debian, aarch64, typically 1-2GB RAM).
 
----
+`curl | bash` that doesn't assume you know container networking, and is
+built specifically not to repeat a UFW/Docker lockout this project's
+history already ran into once — see
+[docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md) for the full reasoning
+and what's been verified vs. still needs testing on real hardware.
 
-## Overview
+## What you get
 
-Running AI assistants and multi-provider fallback proxies on hardware with 1 GB to 2 GB of RAM presents specific constraints. Standard container setups can quickly exhaust available memory or trigger firewall conflicts.
+- **Hermes Agent** — chat with your own AI assistant over Telegram (no
+  ports need to be opened; it uses outbound long-polling)
+- **9Router** — self-hosted BYOK gateway in front of Hermes, so you bring
+  your own provider (any built-in provider 9Router supports, or any custom
+  OpenAI/Anthropic-compatible endpoint — see `docs/PROVIDERS.md`), with
+  optional automatic fallback across several models
+- Runs on **Podman rootless by default** (daemonless, and its networking
+  doesn't touch host iptables/UFW at all 
+- Least-privilege secrets: each container only receives the variables it needs, and Hermes talks to 9router with its own auto-generated API key
+- Automatic swapfile on low-RAM devices, log rotation, resource limits per
+  container, and a "lite" mode that disables Hermes's heaviest tools
+  (browser automation, vision, image/video gen) for weaker hardware
 
-This installer provides:
-- Default rootless Podman execution to eliminate daemon memory overhead.
-- Automatic memory detection and proportional swapfile allocation.
-- A Lite mode for Hermes Agent that disables heavy browser automation and vision tools.
-- Explicit container memory limits to prevent out-of-memory kernel panics.
-- Automated 9Router provider and fallback combo provisioning.
-- Optional Caddy TLS reverse proxy with basic authentication.
-- Idempotent execution and complete, non-destructive uninstall scripts.
+## Requirements
 
----
+- An STB (or any Linux box) running a Debian-family OS (Armbian, Debian,
+  Ubuntu), aarch64 or x86_64
+- Root/sudo access
+- At least one AI provider you can connect in the 9Router dashboard —
+  built-in (NVIDIA NIM, Cloudflare Workers AI, BytePlus, OpenAI, and many
+  more) or a custom OpenAI/Anthropic-compatible endpoint. See
+  `docs/PROVIDERS.md` — you connect it there first, then list the
+  resulting model id in `.env`.
+- A Telegram bot token from [@BotFather](https://t.me/BotFather)
 
-## Hardware and System Requirements
+## Quick start
 
-| Specification | Minimum | Recommended | Notes |
-| :--- | :--- | :--- | :--- |
-| Architecture | 64-bit ARM (aarch64) or x86_64 | aarch64 | 32-bit (armv7l) is unsupported by upstream images |
-| RAM | 1 GB physical RAM | 2 GB or more | Automated swap allocation activates for <= 2 GB |
-| Storage | 4 GB free disk space | 8 GB or more | Required for base images and swapfile |
-| Operating System | Debian 11/12, Ubuntu 22.04/24.04, Armbian | Armbian (Debian Bookworm base) | Kernel must support cgroups and user namespaces |
-
----
-
-## Quick Start
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/MastayY/hermes-stb-installer.git
+```sh
+git clone https://github.com/MastayY/hermes-stb-installer
 cd hermes-stb-installer
-```
-
-### 2. Configure Environment Secrets
-
-Copy the example environment file and edit your credentials:
-
-```bash
 cp .env.example .env
-chmod 600 .env
-nano .env
+nano .env   # fill in your Telegram bot token for now
+sudo ./install.sh
 ```
 
-Set your Telegram Bot token and provider API keys:
-- `TELEGRAM_BOT_TOKEN`: Token obtained from [@BotFather](https://t.me/botfather).
-- `TELEGRAM_ALLOWED_USERS`: Comma-separated numerical Telegram user IDs.
-- Provider keys (e.g. `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`).
+Then connect a provider in the 9Router dashboard (`docs/PROVIDERS.md`), add
+its model id to `NINE_ROUTER_MODELS` in `.env`, and re-run `sudo
+./install.sh` — it's idempotent, safe to run again.
 
-### 3. Run the Installer
+Prefer not to pipe a script straight into bash? Reasonable instinct for a
+homelab — clone, read `install.sh` and the `lib/` scripts it sources, then
+run it as above once you're satisfied.
 
-For standard installation (Podman rootless by default):
+## Options
 
-```bash
-./install.sh
+```
+./install.sh [options]
+
+  --runtime=podman|docker   Container runtime (default: podman)
+  --no-swap                 Skip automatic swapfile creation
+  --with-proxy=<domain>     Set up Caddy reverse proxy for the 9router
+                             dashboard at <domain> (off by default)
+  -h, --help                Show help
 ```
 
-For devices with 1 GB RAM:
+By default, nothing is exposed beyond your LAN: the 9router dashboard binds
+to all interfaces on port `20128` but isn't proxied or TLS'd, and Telegram
+uses outbound polling so no inbound port is needed for chat at all. Only
+reach for `--with-proxy` if you specifically want the dashboard reachable
+from outside your network — and change `INITIAL_PASSWORD` in `.env` from
+its default before you do.
 
-```bash
-./install.sh --lite
-```
+## After install
 
----
+- Message your Telegram bot directly — that's the main interface
+- Dashboard: `http://<device-ip>:20128/dashboard` (from your LAN, or over
+  an SSH tunnel: `ssh -L 20128:localhost:20128 user@device-ip`)
+- Logs: `podman logs -f hermes` / `podman logs -f 9router` (or `docker`,
+  matching whichever runtime you chose)
+- Change the model(s): edit `NINE_ROUTER_MODELS` in `.env` (see
+  `docs/PROVIDERS.md` for the id format) and re-run `sudo ./install.sh`,
+  or change it directly in the 9router dashboard
 
-## CLI Options
-
-| Flag | Description | Default |
-| :--- | :--- | :--- |
-| `--runtime=podman\|docker` | Selects container runtime | `podman` |
-| `--lite` | Activates low-RAM profile (disables Chromium and vision tools) | Auto-detected if RAM <= 2 GB |
-| `--with-proxy` | Deploys Caddy reverse proxy on ports 80/443 with TLS and basicauth | Disabled |
-| `--no-swap` | Skips automatic swapfile allocation | Disabled |
-| `--non-interactive` | Runs without prompting for interactive inputs | Disabled |
-| `--help`, `-h` | Shows usage documentation | |
-
----
-
-### Network Isolation
-- Hermes Agent connects to 9Router over an internal container bridge network.
-- 9Router dashboard binds to `127.0.0.1:20128` by default to avoid unauthenticated exposure on local area networks.
-- Telegram communication operates via outbound HTTPS long-polling, requiring no inbound port forwarding.
-
----
-
-## Accessing the 9Router Dashboard
-
-Because 9Router is bound to localhost for security, access the web dashboard from your desktop using an SSH tunnel:
-
-```bash
-ssh -L 20128:127.0.0.1:20128 user@<STB_IP_ADDRESS>
-```
-
-Then navigate to:
-```
-http://localhost:20128/dashboard
-```
-
----
-
-## Management and Maintenance
-
-### Updating Images
-To pull the latest container images and restart services without modifying configuration or databases:
-
-```bash
-./update.sh
-```
-
-If running the low-RAM profile:
-
-```bash
-./update.sh --lite
-```
-
-### Checking Service Logs
+## Checking Service Logs
 For Podman:
 ```bash
 podman logs -f 9router
-podman logs -f hermes-agent
+podman logs -f hermes
 ```
 
 For Docker:
 ```bash
 docker logs -f 9router
-docker logs -f hermes-agent
+docker logs -f hermes
+
+## Updating
+
+```sh
+sudo ./update.sh
 ```
 
-### Uninstallation
-To cleanly tear down containers and reset firewall rules:
+Pulls new images and recreates containers. Backs up `.env` and `data/` to
+`backups/<timestamp>/` first. Does not touch your configuration.
 
-```bash
-./uninstall.sh
+## Uninstalling
+
+```sh
+sudo ./uninstall.sh
 ```
 
-To also delete persistent model databases and configuration files:
+Stops and removes containers, reverts the UFW rule (if you used the Docker
+runtime) or the podman-restart service (if Podman), and asks before
+touching your data or swapfile.
 
-```bash
-./uninstall.sh --purge-data --remove-swap
+## Repository layout
+
+```
+install.sh / uninstall.sh / update.sh
+lib/            detect, swap, runtime selection, podman/docker setup,
+                9router combo auto-setup, health checks
+compose/        docker-compose.yml (+ optional proxy override)
+config/         Hermes config.yaml template, Caddyfile template
+data/           created at install time — SQLite DB, Hermes memory, etc.
+docs/           PROVIDERS.md, COMPATIBILITY.md, TROUBLESHOOTING.md
 ```
 
----
+## Contributing compatibility reports
 
-## Security Implementation
-
-1. **Rootless by Default**: Podman executes within an unprivileged user namespace. System iptables rules are untouched.
-2. **Docker Firewall Hardening**: When Docker fallback is selected (`--runtime=docker`), the installer injects a `DOCKER-USER` chain filter into `/etc/ufw/after.rules` to prevent Docker from bypassing existing UFW firewall policies.
-3. **Log Rotation**: Docker daemon configuration is capped with `max-size: 10m` and `max-file: 3` to protect eMMC and microSD storage from disk exhaustion.
-4. **Credential Isolation**: The generated `.env` file is set to mode `0600`. Tokens are passed into container processes via environment variables and never logged to stdout or files.
-
----
+Tried this on a specific STB model? Please add a row to
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) via PR — device, RAM,
+runtime used, and how it went. This project targets hardware that's
+inherently varied (STB kernels are frequently stripped-down community
+builds), so real reports matter more than any spec sheet.
 
 ## License
 
-This project is released under the [MIT License](LICENSE).
+MIT (this installer). Hermes Agent and 9Router are separate MIT-licensed
+projects — see [LICENSE](LICENSE) for details.

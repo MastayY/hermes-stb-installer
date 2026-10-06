@@ -1,81 +1,35 @@
 #!/usr/bin/env bash
-# update.sh: Pull latest container images and restart services without data loss.
+# update.sh — hermes-stb-installer
+# Pulls new images and recreates containers without touching .env or data/.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/runtime-select.sh"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/healthcheck.sh"
-
-show_help() {
-    cat <<EOF
-Usage: ./update.sh [OPTIONS]
-
-Pulls the latest container images for 9Router and Hermes Agent,
-and gracefully restarts the stack without altering configuration.
-
-Options:
-  --lite             Use the lite mode compose specification
-  --with-proxy       Include the Caddy reverse proxy override
-  --help, -h         Display this help message
-
-EOF
-}
-
-LITE_MODE=false
-WITH_PROXY=false
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --lite)
-            LITE_MODE=true
-            shift
-            ;;
-        --with-proxy)
-            WITH_PROXY=true
-            shift
-            ;;
-        --help|-h)
-            show_help
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1" >&2
-            show_help
-            exit 1
-            ;;
-    esac
-done
-
-echo "=========================================================="
-echo "           Hermes + 9Router Stack Updater                 "
-echo "=========================================================="
-
-RUNTIME="$(runtime_determine "")"
-echo "Active runtime: ${RUNTIME}"
-
-COMPOSE_ARGS=("-f")
-if [[ "${LITE_MODE}" == "true" ]]; then
-    COMPOSE_ARGS+=("${SCRIPT_DIR}/compose/docker-compose.lite.yml")
-else
-    COMPOSE_ARGS+=("${SCRIPT_DIR}/compose/docker-compose.yml")
+if [ ! -f .runtime ]; then
+  echo "ERROR: .runtime state file not found — run install.sh first." >&2
+  exit 1
 fi
+CONTAINER_RUNTIME="$(cat .runtime)"
+export CONTAINER_RUNTIME
+WITH_PROXY=0
+[ -f config/Caddyfile ] && WITH_PROXY=1
+export WITH_PROXY
 
-if [[ "${WITH_PROXY}" == "true" ]]; then
-    COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/compose/docker-compose.proxy.yml")
-fi
+# shellcheck source=lib/runtime-select.sh
+. lib/runtime-select.sh
 
-echo "Pulling updated container images..."
-container_compose_exec "${RUNTIME}" "${COMPOSE_ARGS[@]}" pull
+echo "Backing up ./data and .env before updating..."
+backup_dir="backups/$(date +%Y%m%d%H%M%S)"
+mkdir -p "$backup_dir"
+cp -a .env "$backup_dir/" 2>/dev/null || true
+cp -a data "$backup_dir/" 2>/dev/null || true
+echo "  Backup at $backup_dir"
 
-echo "Recreating and restarting updated services..."
-container_compose_exec "${RUNTIME}" "${COMPOSE_ARGS[@]}" up -d --remove-orphans
+echo "Pulling latest images..."
+compose pull
 
-echo "Verifying service health after update..."
-run_full_healthcheck "${RUNTIME}"
+echo "Recreating containers..."
+compose up -d --force-recreate
 
-echo "=========================================================="
-echo "Update completed successfully."
-echo "=========================================================="
+echo "Done. Check status with: $CONTAINER_RUNTIME ps"

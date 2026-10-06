@@ -1,17 +1,27 @@
-# Caddy Reverse Proxy Configuration for STB Homelab
-# Automatic HTTPS, HTTP/2 & HTTP/3 support with Basic Authentication
+# hermes-9router-stb-installer — config/Caddyfile.template
+#
+# install.sh substitutes __DOMAIN__ with the value you provide via
+# --with-proxy=<domain> and writes the result to config/Caddyfile.
+# Caddy handles automatic HTTPS (Let's Encrypt) for a real domain name;
+# for a bare IP or .local/.home.arpa name it falls back to a self-signed cert.
+#
+# SECURITY NOTE: this exposes the 9Router dashboard, which holds your
+# provider API keys, to whatever network can reach __DOMAIN__. Make sure
+# INITIAL_PASSWORD in .env has been changed from the default before using
+# this, and prefer restricting access at your router/firewall to trusted
+# networks or a VPN rather than the open internet if at all possible.
 
-{$DOMAIN:localhost} {
-    # Basic Authentication to secure the 9Router dashboard
-    basicauth * {
-        {$PROXY_USER:admin} {$PROXY_PASSWORD_HASH:$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR78.44mUnGWDexG}
-    }
-
-    # Proxy to 9Router container
-    reverse_proxy router:20128 {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-    }
+__DOMAIN__ {
+	reverse_proxy /* localhost:20128
 }
+
+# Uncomment if you also enabled the Hermes dashboard (HERMES_DASHBOARD=1
+# in .env) and want it reachable through the same proxy on a subpath.
+# Verify this matches Hermes's current dashboard auth requirements in
+# website/docs/user-guide/docker.md before relying on it — a non-loopback
+# bind requires a configured DashboardAuthProvider (basic auth/OAuth/OIDC).
+#
+# __DOMAIN__/hermes/* {
+# 	uri strip_prefix /hermes
+# 	reverse_proxy localhost:9119
+# }

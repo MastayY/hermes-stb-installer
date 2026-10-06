@@ -1,166 +1,59 @@
 #!/usr/bin/env bash
-# lib/podman-setup.sh: Rootless Podman configuration and systemd user service setup.
+# lib/podman-setup.sh — rootless Podman auto-start setup.
+# Meant to be sourced by install.sh, not executed directly. Only called
+# when CONTAINER_RUNTIME=podman.
+#
+# Confidence note: the `loginctl enable-linger` step is well-established
+# and was cross-checked via web search during planning. The
+# `podman-restart.service` unit name is Podman's own documented mechanism
+# for restarting containers with a restart policy after boot/reboot, but
+# its exact availability/name can vary by Podman version and distro
+# packaging — verify with `systemctl --user list-unit-files | grep podman`
+# after install and adjust here if it's named differently on your target
+# distro.
 
-podman_enable_user_linger() {
-    local target_user="${1:-$(whoami)}"
+setup_podman_rootless_autostart() {
+  local target_user="${SUDO_USER:-$USER}"
 
-    echo "Configuring user lingering for '${target_user}'..."
+  # Confirmed via hands-on testing during development
+  # rootless Podman needs subuid/subgid ranges for
+  # the target user. `useradd -m` provisions these automatically on some
+  # distros but not reliably on all Armbian builds — check and fix rather
+  # than assume.
+  if ! grep -q "^${target_user}:" /etc/subuid 2>/dev/null; then
+    echo "  Podman: no /etc/subuid entry for '$target_user', adding one..."
+    echo "${target_user}:100000:65536" >> /etc/subuid
+  fi
+  if ! grep -q "^${target_user}:" /etc/subgid 2>/dev/null; then
+    echo "  Podman: no /etc/subgid entry for '$target_user', adding one..."
+    echo "${target_user}:100000:65536" >> /etc/subgid
+  fi
 
-    if [[ "${PODMAN_SETUP_DRY_RUN:-false}" == "true" ]]; then
-        echo "[DRY-RUN] loginctl enable-linger ${target_user}"
-        return 0
-    fi
+  echo "  Podman: enabling lingering for user '$target_user' (keeps rootless"
+  echo "          containers running after logout / across reboot)..."
+  loginctl enable-linger "$target_user" 2>/dev/null || {
+    echo "WARNING: 'loginctl enable-linger' failed. Rootless containers will" >&2
+    echo "         only stay up while $target_user has an active session." >&2
+  }
 
-    if ! command -v loginctl >/dev/null 2>&1; then
-        echo "WARNING: loginctl command not found. Cannot enable user lingering automatically." >&2
-        return 0
-    fi
-
-    # Check if lingering is already enabled
-    if loginctl show-user "${target_user}" 2>/dev/null | grep -qi "Linger=yes"; then
-        echo "User lingering is already enabled for '${target_user}'."
-        return 0
-    fi
-
-    if loginctl enable-linger "${target_user}" 2>/dev/null; then
-        echo "User lingering successfully enabled."
-        return 0
-    fi
-
-    # Fallback with sudo if needed
-    if command -v sudo >/dev/null 2>&1; then
-        if sudo loginctl enable-linger "${target_user}" 2>/dev/null; then
-            echo "User lingering successfully enabled via sudo."
-            return 0
-        fi
-    fi
-
-    echo "WARNING: Failed to enable user lingering. Containers may terminate when logging out." >&2
-    return 0
+  echo "  Podman: enabling podman-restart.service for boot-time auto-restart..."
+  if su - "$target_user" -c 'systemctl --user list-unit-files podman-restart.service' >/dev/null 2>&1; then
+    su - "$target_user" -c 'systemctl --user enable --now podman-restart.service' \
+      || echo "WARNING: could not enable podman-restart.service — verify manually." >&2
+  else
+    echo "WARNING: podman-restart.service not found for user '$target_user'." >&2
+    echo "         Your Podman version/packaging may name or provide this" >&2
+    echo "         differently. Containers started with 'restart: unless-stopped'" >&2
+    echo "         will still restart on failure while the session is active," >&2
+    echo "         but may not survive a full host reboot without this unit." >&2
+    echo "         See docs/TROUBLESHOOTING.md." >&2
+  fi
 }
 
-podman_verify_subuid_subgid() {
-    local target_user="${1:-$(whoami)}"
-
-    if [[ "${target_user}" == "root" ]]; then
-        return 0
-    fi
-
-    if [[ "${PODMAN_SETUP_DRY_RUN:-false}" == "true" ]]; then
-        echo "[DRY-RUN] Verified subuid/subgid mapping for ${target_user}"
-        return 0
-    fi
-
-    local has_subuid=false
-    local has_subgid=false
-
-    if [[ -f /etc/subuid ]] && grep -qs "^${target_user}:" /etc/subuid; then
-        has_subuid=true
-    fi
-
-    if [[ -f /etc/subgid ]] && grep -qs "^${target_user}:" /etc/subgid; then
-        has_subgid=true
-    fi
-
-    if [[ "${has_subuid}" == "true" && "${has_subgid}" == "true" ]]; then
-        return 0
-    fi
-
-    echo "Configuring subuid and subgid ranges for rootless containers (${target_user})..."
-
-    local cmd_prefix=""
-    if [[ ${EUID} -ne 0 ]]; then
-        if command -v sudo >/dev/null 2>&1; then
-            cmd_prefix="sudo"
-        else
-            echo "WARNING: Cannot configure /etc/subuid without root privileges." >&2
-            return 0
-        fi
-    fi
-
-    if command -v usermod >/dev/null 2>&1; then
-        ${cmd_prefix} usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${target_user}" 2>/dev/null || true
-    fi
-
-    return 0
-}
-
-podman_setup_systemd_service() {
-    local install_dir="$1"
-    local compose_file="${2:-compose/docker-compose.yml}"
-    local service_name="hermes-stb.service"
-    local user_systemd_dir="${HOME}/.config/systemd/user"
-    local service_file="${user_systemd_dir}/${service_name}"
-
-    echo "Configuring systemd user service for Podman compose autostart..."
-
-    if [[ "${PODMAN_SETUP_DRY_RUN:-false}" == "true" ]]; then
-        echo "[DRY-RUN] Created systemd user unit at ${service_file} pointing to ${compose_file}"
-        return 0
-    fi
-
-    mkdir -p "${user_systemd_dir}"
-
-    local compose_bin
-    if podman compose version >/dev/null 2>&1; then
-        compose_bin="$(command -v podman) compose"
-    elif command -v podman-compose >/dev/null 2>&1; then
-        compose_bin="$(command -v podman-compose)"
-    else
-        compose_bin="podman compose"
-    fi
-
-    cat > "${service_file}" <<EOF
-[Unit]
-Description=Hermes Agent and 9Router Homelab Stack (Podman Rootless)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=${install_dir}
-ExecStart=${compose_bin} -f ${compose_file} up -d
-ExecStop=${compose_bin} -f ${compose_file} down
-TimeoutStartSec=0
-
-[Install]
-WantedBy=default.target
-EOF
-
-    chmod 644 "${service_file}"
-
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user daemon-reload 2>/dev/null || true
-        systemctl --user enable "${service_name}" 2>/dev/null || true
-        echo "Systemd user service '${service_name}' enabled successfully."
-    fi
-
-    return 0
-}
-
-podman_remove_systemd_service() {
-    local service_name="hermes-stb.service"
-    local service_file="${HOME}/.config/systemd/user/${service_name}"
-
-    if [[ "${PODMAN_SETUP_DRY_RUN:-false}" == "true" ]]; then
-        echo "[DRY-RUN] Removed systemd service ${service_file}"
-        return 0
-    fi
-
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user stop "${service_name}" 2>/dev/null || true
-        systemctl --user disable "${service_name}" 2>/dev/null || true
-    fi
-
-    if [[ -f "${service_file}" ]]; then
-        rm -f "${service_file}"
-    fi
-
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user daemon-reload 2>/dev/null || true
-    fi
-
-    echo "Podman systemd service successfully removed."
-    return 0
+# teardown_podman_rootless_autostart: reverses the above, called by uninstall.sh
+teardown_podman_rootless_autostart() {
+  local target_user="${SUDO_USER:-$USER}"
+  su - "$target_user" -c 'systemctl --user disable --now podman-restart.service' 2>/dev/null || true
+  # Deliberately NOT calling `loginctl disable-linger` here — the user may
+  # have enabled lingering for other reasons unrelated to this installer.
 }

@@ -1,26 +1,23 @@
+# hermes-stb-installer — compose/docker-compose.proxy.yml
+#
+# OPTIONAL override. Only applied when install.sh is run with --with-proxy.
+# Not needed for the default use case (Telegram long-polling + LAN-only
+# dashboard access).
+#
+# Caddy runs with network_mode: host (matching hermes) so it can reach both
+# 9router's dashboard (localhost:20128) and, if enabled, Hermes's own
+# dashboard (localhost:9119) without extra bridge-network wiring.
+#
+# Usage: podman compose -f compose/docker-compose.yml -f compose/docker-compose.proxy.yml up -d
+
 services:
   caddy:
     image: caddy:2-alpine
-    container_name: caddy-proxy
+    container_name: caddy
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: host
     volumes:
-      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    environment:
-      - DOMAIN=${DOMAIN:-localhost}
-      - PROXY_USER=${PROXY_USER:-admin}
-      - PROXY_PASSWORD_HASH=${PROXY_PASSWORD_HASH:-$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR78.44mUnGWDexG}
-    deploy:
-      resources:
-        limits:
-          memory: 64M
-    networks:
-      - internal_net
-
-volumes:
-  caddy_data:
-  caddy_config:
+      - ../config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../data/caddy/data:/data
+      - ../data/caddy/config:/config
+    mem_limit: 128m
