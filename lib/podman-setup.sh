@@ -12,8 +12,39 @@
 # after install and adjust here if it's named differently on your target
 # distro.
 
+setup_podman_registries() {
+  mkdir -p /etc/containers/registries.conf.d
+  local conf="/etc/containers/registries.conf.d/00-shortnames.conf"
+  if [ ! -f "$conf" ] && ! grep -qs 'unqualified-search-registries' /etc/containers/registries.conf 2>/dev/null; then
+    echo 'unqualified-search-registries = ["docker.io"]' > "$conf"
+    echo "  Podman: configured default search registry (docker.io)"
+  fi
+}
+
+upgrade_podman_compose_if_buggy() {
+  # Debian 12 packages podman-compose 1.0.3 which has bug #512 (passes --net alongside --network host).
+  # Upstream fixed this in >= 1.0.6.
+  if command -v podman-compose >/dev/null 2>&1; then
+    local ver
+    ver="$(podman-compose --version 2>&1 || true)"
+    if echo "$ver" | grep -qE '1\.0\.[0-5]'; then
+      echo "  Podman: updating podman-compose to fix host network bug (#512)..."
+      if command -v curl >/dev/null 2>&1; then
+        curl -fsSL https://raw.githubusercontent.com/containers/podman-compose/devel/podman_compose.py \
+          -o /usr/local/bin/podman-compose 2>/dev/null && chmod +x /usr/local/bin/podman-compose && return 0
+      fi
+      if command -v pip3 >/dev/null 2>&1; then
+        pip3 install --break-system-packages -U podman-compose >/dev/null 2>&1 && return 0
+      fi
+    fi
+  fi
+}
+
 setup_podman_rootless_autostart() {
   local target_user="${SUDO_USER:-$USER}"
+
+  setup_podman_registries
+  upgrade_podman_compose_if_buggy
 
   # Confirmed via hands-on testing during development
   # rootless Podman needs subuid/subgid ranges for
@@ -37,7 +68,9 @@ setup_podman_rootless_autostart() {
   }
 
   echo "  Podman: enabling podman-restart.service for boot-time auto-restart..."
-  if su - "$target_user" -c 'systemctl --user list-unit-files podman-restart.service' >/dev/null 2>&1; then
+  if systemctl list-unit-files podman-restart.service >/dev/null 2>&1; then
+    systemctl enable --now podman-restart.service 2>/dev/null || true
+  elif su - "$target_user" -c 'systemctl --user list-unit-files podman-restart.service' >/dev/null 2>&1; then
     su - "$target_user" -c 'systemctl --user enable --now podman-restart.service' \
       || echo "WARNING: could not enable podman-restart.service — verify manually." >&2
   else

@@ -12,7 +12,7 @@
 
 services:
   caddy:
-    image: caddy:2-alpine
+    image: docker.io/library/caddy:2-alpine
     container_name: caddy
     restart: unless-stopped
     network_mode: host
