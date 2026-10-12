@@ -76,9 +76,11 @@ echo
 echo "[1/9] Preflight checks"
 detect_arch
 detect_ram_mb
+detect_disk_free_mb
 detect_distro
 print_detect_summary
 require_supported_arch
+warn_low_disk_space 5500
 
 # -----------------------------------------------------------------------------
 # Phase 2 — Resource management (swap)
@@ -173,6 +175,20 @@ fi
 echo
 echo "[6/9] Starting services (${COMPOSE_CMD[*]:-$CONTAINER_RUNTIME compose} up -d)"
 compose up -d
+
+# Verify services were created
+if ! "$CONTAINER_RUNTIME" container exists 9router 2>/dev/null && ! "$CONTAINER_RUNTIME" ps -a --format '{{.Names}}' | grep -q '^9router$'; then
+  echo "ERROR: '9router' container was not created." >&2
+  echo "       Image pull or container creation failed. Check the output above." >&2
+  exit 1
+fi
+
+if ! "$CONTAINER_RUNTIME" container exists hermes 2>/dev/null && ! "$CONTAINER_RUNTIME" ps -a --format '{{.Names}}' | grep -q '^hermes$'; then
+  echo "ERROR: 'hermes' container was not created." >&2
+  echo "       Image pull or layer extraction failed (common on STBs: 'no space left on device')." >&2
+  echo "       Check free disk space with 'df -h /' and see docs/TROUBLESHOOTING.md." >&2
+  exit 1
+fi
 
 # -----------------------------------------------------------------------------
 # Phase 7 — Combo auto-setup

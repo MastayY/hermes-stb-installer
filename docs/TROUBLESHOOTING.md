@@ -23,6 +23,43 @@ SoC.
   `dd`/`fallocate` — check `dmesg` for I/O errors.
 - Run with `--no-swap` if you'd rather manage swap yourself.
 
+## "no space left on device" during image pull / layer extraction
+
+`nousresearch/hermes-agent:latest` is ~1.2 GB compressed and ~3.9 GB uncompressed.
+Combined with `9router` (~500 MB) and layer extraction buffers, Podman requires
+at least **5.5 to 6 GB free space** on `/var/lib/containers` (or `/`).
+
+If the install fails with `write ...: no space left on device`:
+
+1. **Check current disk space**:
+   ```sh
+   df -h /
+   ```
+2. **Clean up partial pull layers, image cache, and old packages**:
+   ```sh
+   sudo podman system prune -a --volumes -f
+   sudo apt-get clean
+   sudo journalctl --vacuum-size=50M
+   sudo rm -rf /var/tmp/* /tmp/*
+   ```
+3. **Expand root filesystem (Armbian)**:
+   If your SD card or eMMC is larger than what `df -h /` reports (common if auto-resize did not run):
+   ```sh
+   sudo armbian-config   # System -> Expand filesystem
+   # or reboot once so armbian-resize-filesystem runs
+   ```
+4. **Use external storage (USB Flash drive / MicroSD)**:
+   If the internal eMMC is strictly 8 GB and free space is permanently under 5.5 GB, configure Podman's storage directory to use a mounted external USB drive:
+   - Format and mount your drive, e.g. at `/mnt/usb`
+   - Edit or create `/etc/containers/storage.conf`:
+     ```toml
+     [storage]
+     driver = "overlay"
+     runroot = "/run/containers/storage"
+     graphroot = "/mnt/usb/containers"
+     ```
+   - Re-run `sudo ./install.sh --no-swap`.
+
 ## "no connected provider found for prefix 'xyz'" warning
 
 `lib/combo-setup.sh` checks each model in `NINE_ROUTER_MODELS` against your
