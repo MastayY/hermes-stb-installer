@@ -35,15 +35,43 @@ select_runtime() {
     echo "  Runtime: $CONTAINER_RUNTIME already installed ($($CONTAINER_RUNTIME --version 2>/dev/null | head -1))"
   fi
 
-  # Verify compose plugin is available under either invocation style.
-  if ! "$CONTAINER_RUNTIME" compose version >/dev/null 2>&1; then
-    echo "ERROR: '$CONTAINER_RUNTIME compose' is not available." >&2
-    echo "       This installer needs the Compose plugin (podman-compose or" >&2
-    echo "       docker-compose-plugin), not the old standalone docker-compose." >&2
+  # Verify compose tool is available under either invocation style.
+  if ! resolve_compose_command "$CONTAINER_RUNTIME"; then
+    echo "ERROR: compose tool is not available for '$CONTAINER_RUNTIME'." >&2
+    echo "       This installer needs either '$CONTAINER_RUNTIME compose' (Podman 4.7+)" >&2
+    echo "       or an external compose binary ('podman-compose' / 'docker-compose')." >&2
     return 1
   fi
+  echo "  Runtime: using compose command '${COMPOSE_CMD[*]}'"
 
   echo "$CONTAINER_RUNTIME" > "$RUNTIME_STATE_FILE"
+}
+
+# resolve_compose_command: determines the right compose command to use.
+# For Podman: checks "podman compose" (Podman >= 4.7), then fallbacks to "podman-compose" (Debian 12 / Podman 4.3).
+# For Docker: checks "docker compose" (docker-compose-plugin), then fallbacks to "docker-compose".
+resolve_compose_command() {
+  local runtime="${1:-${CONTAINER_RUNTIME:-podman}}"
+
+  if [ "$runtime" = "podman" ]; then
+    if podman compose version >/dev/null 2>&1; then
+      COMPOSE_CMD=("podman" "compose")
+      return 0
+    elif command -v podman-compose >/dev/null 2>&1; then
+      COMPOSE_CMD=("podman-compose")
+      return 0
+    fi
+  elif [ "$runtime" = "docker" ]; then
+    if docker compose version >/dev/null 2>&1; then
+      COMPOSE_CMD=("docker" "compose")
+      return 0
+    elif command -v docker-compose >/dev/null 2>&1; then
+      COMPOSE_CMD=("docker-compose")
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 install_podman() {
@@ -79,10 +107,16 @@ compose_files() {
   echo "$files"
 }
 
-# compose RUNTIME ARGS...: runs `<runtime> compose <compose_files> ARGS...`
+# compose ARGS...: runs `<compose_command> <compose_files> ARGS...`
 compose() {
+  if [ -z "${COMPOSE_CMD+x}" ] || [ "${#COMPOSE_CMD[@]}" -eq 0 ]; then
+    resolve_compose_command "${CONTAINER_RUNTIME:-podman}" || {
+      echo "ERROR: compose command is not available for '${CONTAINER_RUNTIME:-podman}'." >&2
+      return 1
+    }
+  fi
   # shellcheck disable=SC2046
-  "$CONTAINER_RUNTIME" compose $(compose_files) "$@"
+  "${COMPOSE_CMD[@]}" $(compose_files) "$@"
 }
 
 # smoke_test_runtime: the "does this actually work" check — not just a

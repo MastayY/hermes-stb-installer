@@ -171,7 +171,7 @@ fi
 # Phase 6 — Bring services up
 # -----------------------------------------------------------------------------
 echo
-echo "[6/9] Starting services ($CONTAINER_RUNTIME compose up -d)"
+echo "[6/9] Starting services (${COMPOSE_CMD[*]:-$CONTAINER_RUNTIME compose} up -d)"
 compose up -d
 
 # -----------------------------------------------------------------------------
